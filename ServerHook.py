@@ -1,11 +1,16 @@
 # ServerHook.py
-# Webhook básico para Zobot (Zoho SalesIQ) en Python + Flask
+# Webhook para Zobot (Zoho SalesIQ) + creación de Deals en Zoho CRM
 
 import os
+import time
 import unicodedata
+
+import requests
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+
+# ===================== SESIONES EN MEMORIA =====================
 
 # Sesiones en memoria: {visitor_id: {"state": "...", "data": {...}}}
 sessions = {}
@@ -54,7 +59,127 @@ def normalizar_texto(txt: str) -> str:
     return txt.strip()
 
 
-# Ruta simple para comprobar que el servidor está arriba
+# ===================== INTEGRACIÓN ZOHO CRM =====================
+
+CRM_BASE = "https://www.zohoapis.com/crm/v2.1"      # región .com
+ACCOUNTS_BASE = "https://accounts.zoho.com"
+
+# Cache en memoria del access token
+access_token_cache = {
+    "token": None,
+    "expires_at": 0.0,   # timestamp UNIX
+}
+
+
+def get_access_token() -> str:
+    """
+    Devuelve un access token válido usando refresh_token si es necesario.
+    Usa las variables de entorno:
+      - ZOHO_CLIENT_ID
+      - ZOHO_CLIENT_SECRET
+      - ZOHO_REFRESH_TOKEN
+    """
+    now = time.time()
+    if (
+        access_token_cache["token"]
+        and access_token_cache["expires_at"] - 60 > now
+    ):
+        # Token aún válido (dejamos 60s de margen)
+        return access_token_cache["token"]
+
+    client_id = os.environ.get("ZOHO_CLIENT_ID")
+    client_secret = os.environ.get("ZOHO_CLIENT_SECRET")
+    refresh_token = os.environ.get("ZOHO_REFRESH_TOKEN")
+
+    if not client_id or not client_secret or not refresh_token:
+        print("ERROR: faltan ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN.")
+        return None
+
+    url = f"{ACCOUNTS_BASE}/oauth/v2/token"
+    params = {
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "grant_type": "refresh_token",
+    }
+
+    try:
+        resp = requests.post(url, params=params, timeout=10)
+        print("=== Respuesta refresh token Zoho ===")
+        print(resp.status_code, resp.text)
+
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        token = data.get("access_token")
+        expires_in = int(data.get("expires_in", 3600))
+
+        if not token:
+            print("ERROR: respuesta sin access_token.")
+            return None
+
+        access_token_cache["token"] = token
+        access_token_cache["expires_at"] = time.time() + expires_in
+        return token
+
+    except Exception as e:
+        print("ERROR llamando a Zoho Accounts:", e)
+        return None
+
+
+def crear_deal_en_zoho(campos: dict):
+    """
+    Crea un Deal en Zoho CRM usando los datos del formulario del bot.
+    'campos' viene de manejar_flujo_cotizacion_bloque.
+    """
+    access_token = get_access_token()
+    if not access_token:
+        print("No se pudo obtener access token de Zoho; se omite creación de Deal.")
+        return None
+
+    url = f"{CRM_BASE}/Deals"
+    headers = {
+        "Authorization": f"Zoho-oauthtoken {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    # Ajuste los API Name según su módulo Deals
+    deal_data = {
+        "Deal_Name": f"Cotización - {campos.get('empresa') or 'Sin empresa'}",
+        "Description": (
+            "Solicitud recibida desde SalesIQ Webhook.\n\n"
+            f"Empresa: {campos.get('empresa')}\n"
+            f"Giro: {campos.get('giro')}\n"
+            f"RUT: {campos.get('rut')}\n"
+            f"Contacto: {campos.get('contacto')}\n"
+            f"Correo: {campos.get('correo')}\n"
+            f"Teléfono: {campos.get('telefono')}\n"
+            f"Producto / descripción: {campos.get('num_parte')}\n"
+            f"Marca: {campos.get('marca')}\n"
+            f"Cantidad: {campos.get('cantidad')}\n"
+            f"Dirección de entrega: {campos.get('direccion_entrega')}"
+        ),
+        "Stage": "Qualification",           # use un Stage existente en su CRM
+        "Lead_Source": "SalesIQ Webhook",   # opcional
+        # Ejemplo de campo personalizado:
+        # "Canal_de_Entrada": "WhatsApp",
+    }
+
+    payload = {"data": [deal_data]}
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        print("=== Respuesta Zoho CRM (Deals) ===")
+        print(resp.status_code, resp.text)
+        return resp
+    except Exception as e:
+        print("ERROR llamando a Zoho CRM:", e)
+        return None
+
+
+# ===================== ENDPOINT WEBHOOK SALESIQ =====================
+
 @app.route("/", methods=["GET"])
 def index():
     return "Webhook server running"
@@ -112,7 +237,7 @@ def salesiq_webhook():
         if state == "cotizacion_bloque":
             return jsonify(manejar_flujo_cotizacion_bloque(session, message_text))
 
-        # Flujo de postventa (sigue paso a paso)
+        # Flujo de postventa
         if state.startswith("postventa_"):
             return jsonify(manejar_flujo_postventa(session, message_text))
 
@@ -135,10 +260,7 @@ def extraer_mensaje(payload: dict) -> str:
     Extrae el texto del mensaje desde el JSON de SalesIQ.
     Intenta primero en payload['message'], luego en payload['request']['message'].
     """
-    # 1) Formato estándar: mensaje a nivel raíz
     msg_obj = payload.get("message")
-
-    # 2) Alternativa: dentro de 'request'
     if not msg_obj:
         req_obj = payload.get("request") or {}
         msg_obj = req_obj.get("message")
@@ -162,10 +284,7 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         or "solicitud cotizacion" in texto_norm
         or texto_norm == "cotizacion"
     ):
-        # Pasamos a modo "bloque"
         session["state"] = "cotizacion_bloque"
-
-        # Enviamos el "formulario" para que lo rellene en un solo mensaje
         formulario = (
             "Perfecto, trabajaremos en su solicitud de cotización.\n"
             "Por favor responda copiando y completando este formulario en un solo mensaje:\n\n"
@@ -180,10 +299,9 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
             "Cantidad:\n"
             "Dirección de entrega:"
         )
-
         return build_reply(formulario)
 
-    # Coincidencias amplias para "Servicio PostVenta"
+    # "Servicio PostVenta"
     if (
         "postventa" in texto_norm
         or "post venta" in texto_norm
@@ -216,13 +334,12 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
 def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     """
     Recibe un solo mensaje con el formulario completo, lo parsea línea por línea
-    y llena session["data"] con los campos.
+    y llena session['data'] con los campos. Luego crea el Deal en Zoho CRM.
     """
     data = session["data"]
     texto = message_text or ""
     lineas = texto.splitlines()
 
-    # Inicializar campos en blanco (por si faltan)
     campos = {
         "empresa": "",
         "giro": "",
@@ -253,20 +370,19 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             campos["contacto"] = valor
         elif "correo" in etiqueta_norm or "email" in etiqueta_norm:
             campos["correo"] = valor
-        elif "telefono" in etiqueta_norm or "teléfono" in etiqueta_norm:
+        elif "telefono" in etiqueta_norm or "telefono" in etiqueta_norm:
             campos["telefono"] = valor
-        elif ("numero de parte" in etiqueta_norm or
-              "número de parte" in etiqueta_norm or
-              "descripcion" in etiqueta_norm):
+        elif ("numero de parte" in etiqueta_norm
+              or "numero de parte" in etiqueta_norm
+              or "descripcion" in etiqueta_norm):
             campos["num_parte"] = valor
         elif "marca" in etiqueta_norm:
             campos["marca"] = valor
         elif "cantidad" in etiqueta_norm:
             campos["cantidad"] = valor
-        elif "direccion de entrega" in etiqueta_norm or "dirección de entrega" in etiqueta_norm:
+        elif "direccion de entrega" in etiqueta_norm:
             campos["direccion_entrega"] = valor
 
-    # Guardar en la sesión
     data.update(campos)
 
     resumen = (
@@ -283,8 +399,8 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         f"Dirección de entrega: {campos['direccion_entrega']}"
     )
 
-    # Aquí puedes añadir validaciones (campos obligatorios, etc.)
-    # o enviar los datos a Zoho CRM/Creator.
+    # Crear Deal en Zoho CRM
+    crear_deal_en_zoho(campos)
 
     session["state"] = "menu_principal"
 
