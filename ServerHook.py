@@ -108,11 +108,11 @@ def salesiq_webhook():
         if state in ("menu_principal", "inicio"):
             return jsonify(manejar_menu_principal(session, message_text))
 
-        # Flujo de solicitud de cotización
-        if state.startswith("cotizacion_"):
-            return jsonify(manejar_flujo_cotizacion(session, message_text))
+        # Flujo de solicitud de cotización (un solo bloque)
+        if state == "cotizacion_bloque":
+            return jsonify(manejar_flujo_cotizacion_bloque(session, message_text))
 
-        # Flujo de postventa
+        # Flujo de postventa (sigue paso a paso)
         if state.startswith("postventa_"):
             return jsonify(manejar_flujo_postventa(session, message_text))
 
@@ -162,14 +162,26 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         or "solicitud cotizacion" in texto_norm
         or texto_norm == "cotizacion"
     ):
-        session["state"] = "cotizacion_empresa"
-        return build_reply(
-            [
-                "Perfecto, trabajaremos en su solicitud de cotización.",
-                "Por favor complete la siguiente información.",
-                "Nombre de la empresa:"
-            ]
+        # Pasamos a modo "bloque"
+        session["state"] = "cotizacion_bloque"
+
+        # Enviamos el "formulario" para que lo rellene en un solo mensaje
+        formulario = (
+            "Perfecto, trabajaremos en su solicitud de cotización.\n"
+            "Por favor responda copiando y completando este formulario en un solo mensaje:\n\n"
+            "Nombre de la empresa:\n"
+            "Giro:\n"
+            "RUT:\n"
+            "Nombre de contacto:\n"
+            "Correo:\n"
+            "Teléfono:\n"
+            "Número de parte o descripción detallada:\n"
+            "Marca:\n"
+            "Cantidad:\n"
+            "Dirección de entrega:"
         )
+
+        return build_reply(formulario)
 
     # Coincidencias amplias para "Servicio PostVenta"
     if (
@@ -201,90 +213,89 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
     )
 
 
-def manejar_flujo_cotizacion(session: dict, message_text: str) -> dict:
+def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
+    """
+    Recibe un solo mensaje con el formulario completo, lo parsea línea por línea
+    y llena session["data"] con los campos.
+    """
     data = session["data"]
-    state = session["state"]
+    texto = message_text or ""
+    lineas = texto.splitlines()
 
-    if state == "cotizacion_empresa":
-        data["empresa"] = message_text
-        session["state"] = "cotizacion_giro"
-        return build_reply("Giro:")
+    # Inicializar campos en blanco (por si faltan)
+    campos = {
+        "empresa": "",
+        "giro": "",
+        "rut": "",
+        "contacto": "",
+        "correo": "",
+        "telefono": "",
+        "num_parte": "",
+        "marca": "",
+        "cantidad": "",
+        "direccion_entrega": ""
+    }
 
-    if state == "cotizacion_giro":
-        data["giro"] = message_text
-        session["state"] = "cotizacion_rut"
-        return build_reply("RUT:")
+    for linea in lineas:
+        if ":" not in linea:
+            continue
+        etiqueta, valor = linea.split(":", 1)
+        etiqueta_norm = normalizar_texto(etiqueta)
+        valor = valor.strip()
 
-    if state == "cotizacion_rut":
-        data["rut"] = message_text
-        session["state"] = "cotizacion_contacto"
-        return build_reply("Nombre de contacto:")
+        if "empresa" in etiqueta_norm:
+            campos["empresa"] = valor
+        elif "giro" in etiqueta_norm:
+            campos["giro"] = valor
+        elif etiqueta_norm in ("rut", "r.u.t", "r u t"):
+            campos["rut"] = valor
+        elif "contacto" in etiqueta_norm:
+            campos["contacto"] = valor
+        elif "correo" in etiqueta_norm or "email" in etiqueta_norm:
+            campos["correo"] = valor
+        elif "telefono" in etiqueta_norm or "teléfono" in etiqueta_norm:
+            campos["telefono"] = valor
+        elif ("numero de parte" in etiqueta_norm or
+              "número de parte" in etiqueta_norm or
+              "descripcion" in etiqueta_norm):
+            campos["num_parte"] = valor
+        elif "marca" in etiqueta_norm:
+            campos["marca"] = valor
+        elif "cantidad" in etiqueta_norm:
+            campos["cantidad"] = valor
+        elif "direccion de entrega" in etiqueta_norm or "dirección de entrega" in etiqueta_norm:
+            campos["direccion_entrega"] = valor
 
-    if state == "cotizacion_contacto":
-        data["contacto"] = message_text
-        session["state"] = "cotizacion_correo"
-        return build_reply("Correo:")
+    # Guardar en la sesión
+    data.update(campos)
 
-    if state == "cotizacion_correo":
-        data["correo"] = message_text
-        session["state"] = "cotizacion_telefono"
-        return build_reply("Teléfono:")
+    resumen = (
+        "Resumen de su solicitud de cotización:\n"
+        f"Nombre de la empresa: {campos['empresa']}\n"
+        f"Giro: {campos['giro']}\n"
+        f"RUT: {campos['rut']}\n"
+        f"Nombre de contacto: {campos['contacto']}\n"
+        f"Correo: {campos['correo']}\n"
+        f"Teléfono: {campos['telefono']}\n"
+        f"Número de parte / descripción: {campos['num_parte']}\n"
+        f"Marca: {campos['marca']}\n"
+        f"Cantidad: {campos['cantidad']}\n"
+        f"Dirección de entrega: {campos['direccion_entrega']}"
+    )
 
-    if state == "cotizacion_telefono":
-        data["telefono"] = message_text
-        session["state"] = "cotizacion_num_parte"
-        return build_reply("Número de parte (o descripción detallada):")
-
-    if state == "cotizacion_num_parte":
-        data["num_parte"] = message_text
-        session["state"] = "cotizacion_marca"
-        return build_reply("Marca:")
-
-    if state == "cotizacion_marca":
-        data["marca"] = message_text
-        session["state"] = "cotizacion_cantidad"
-        return build_reply("Cantidad:")
-
-    if state == "cotizacion_cantidad":
-        data["cantidad"] = message_text
-        session["state"] = "cotizacion_direccion"
-        return build_reply("Dirección de entrega:")
-
-    if state == "cotizacion_direccion":
-        data["direccion_entrega"] = message_text
-
-        resumen = (
-            "Resumen de su solicitud de cotización:\n"
-            f"Nombre de la empresa: {data.get('empresa')}\n"
-            f"Giro: {data.get('giro')}\n"
-            f"RUT: {data.get('rut')}\n"
-            f"Nombre de contacto: {data.get('contacto')}\n"
-            f"Correo: {data.get('correo')}\n"
-            f"Teléfono: {data.get('telefono')}\n"
-            f"Número de parte / descripción: {data.get('num_parte')}\n"
-            f"Marca: {data.get('marca')}\n"
-            f"Cantidad: {data.get('cantidad')}\n"
-            f"Dirección de entrega: {data.get('direccion_entrega')}"
-        )
-
-        session["state"] = "menu_principal"
-
-        return {
-            "action": "reply",
-            "replies": [
-                "Gracias. Hemos registrado su solicitud con el siguiente detalle:",
-                resumen,
-                "Un ejecutivo de Selec se pondrá en contacto con usted."
-            ]
-        }
+    # Aquí puedes añadir validaciones (campos obligatorios, etc.)
+    # o enviar los datos a Zoho CRM/Creator.
 
     session["state"] = "menu_principal"
-    return build_reply(
-        [
-            "Ha ocurrido un problema con la conversación.",
-            "Volvamos al inicio. ¿Desea 'Solicitud Cotización' o 'Servicio PostVenta'?"
+
+    return {
+        "action": "reply",
+        "replies": [
+            "Gracias. Hemos registrado su solicitud con el siguiente detalle:",
+            resumen,
+            "Un ejecutivo de Selec se pondrá en contacto con usted."
         ]
-    )
+    }
 
 
 def manejar_flujo_postventa(session: dict, message_text: str) -> dict:
