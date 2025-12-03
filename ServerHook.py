@@ -148,7 +148,8 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         return build_reply(
             [
                 "Perfecto, trabajaremos en su solicitud de cotización.",
-                "Por favor, indique el nombre de la empresa:"
+                "Por favor complete la siguiente información.",
+                "Nombre de la empresa:"
             ]
         )
 
@@ -178,55 +179,94 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
 
 
 def manejar_flujo_cotizacion(session: dict, message_text: str) -> dict:
+    """
+    Flujo detallado de solicitud de cotización, campo por campo:
+    Empresa, Giro, RUT, Contacto, Correo, Teléfono,
+    Número de parte/descripcion, Marca, Cantidad, Dirección de entrega.
+    """
     data = session["data"]
     state = session["state"]
 
+    # 1) Nombre de la empresa
     if state == "cotizacion_empresa":
         data["empresa"] = message_text
-        session["state"] = "cotizacion_rut"
-        return build_reply("Indique el RUT de la empresa:")
+        session["state"] = "cotizacion_giro"
+        return build_reply("Giro:")
 
+    # 2) Giro
+    if state == "cotizacion_giro":
+        data["giro"] = message_text
+        session["state"] = "cotizacion_rut"
+        return build_reply("RUT:")
+
+    # 3) RUT
     if state == "cotizacion_rut":
         data["rut"] = message_text
         session["state"] = "cotizacion_contacto"
-        return build_reply("Indique el nombre de contacto:")
+        return build_reply("Nombre de contacto:")
 
+    # 4) Nombre de contacto
     if state == "cotizacion_contacto":
         data["contacto"] = message_text
-        session["state"] = "cotizacion_telefono"
-        return build_reply("Indique el teléfono de contacto:")
+        session["state"] = "cotizacion_correo"
+        return build_reply("Correo:")
 
+    # 5) Correo
+    if state == "cotizacion_correo":
+        data["correo"] = message_text
+        session["state"] = "cotizacion_telefono"
+        return build_reply("Teléfono:")
+
+    # 6) Teléfono
     if state == "cotizacion_telefono":
         data["telefono"] = message_text
-        session["state"] = "cotizacion_email"
-        return build_reply("Indique el correo electrónico:")
+        session["state"] = "cotizacion_num_parte"
+        return build_reply("Número de parte (o descripción detallada):")
 
-    if state == "cotizacion_email":
-        data["email"] = message_text
-        session["state"] = "cotizacion_detalle"
-        return build_reply("Indique el número de parte o una descripción del requerimiento:")
+    # 7) Número de parte / descripción
+    if state == "cotizacion_num_parte":
+        data["num_parte"] = message_text
+        session["state"] = "cotizacion_marca"
+        return build_reply("Marca:")
 
-    if state == "cotizacion_detalle":
-        data["detalle"] = message_text
+    # 8) Marca
+    if state == "cotizacion_marca":
+        data["marca"] = message_text
+        session["state"] = "cotizacion_cantidad"
+        return build_reply("Cantidad:")
 
+    # 9) Cantidad
+    if state == "cotizacion_cantidad":
+        data["cantidad"] = message_text
+        session["state"] = "cotizacion_direccion"
+        return build_reply("Dirección de entrega:")
+
+    # 10) Dirección de entrega
+    if state == "cotizacion_direccion":
+        data["direccion_entrega"] = message_text
+
+        # Aquí puede invocar Zoho CRM/Creator, enviar correo, etc.
         resumen = (
-            f"Resumen de su solicitud:\n"
-            f"Empresa: {data.get('empresa')}\n"
+            "Resumen de su solicitud de cotización:\n"
+            f"Nombre de la empresa: {data.get('empresa')}\n"
+            f"Giro: {data.get('giro')}\n"
             f"RUT: {data.get('rut')}\n"
-            f"Contacto: {data.get('contacto')}\n"
+            f"Nombre de contacto: {data.get('contacto')}\n"
+            f"Correo: {data.get('correo')}\n"
             f"Teléfono: {data.get('telefono')}\n"
-            f"Email: {data.get('email')}\n"
-            f"Detalle: {data.get('detalle')}"
+            f"Número de parte / descripción: {data.get('num_parte')}\n"
+            f"Marca: {data.get('marca')}\n"
+            f"Cantidad: {data.get('cantidad')}\n"
+            f"Dirección de entrega: {data.get('direccion_entrega')}"
         )
 
-        # Aquí podría llamar a Zoho CRM/Creator, enviar correo, etc.
-
+        # Volver al menú principal
         session["state"] = "menu_principal"
 
         return {
             "action": "reply",
             "replies": [
-                "Gracias. Hemos registrado su solicitud de cotización con el siguiente detalle:",
+                "Gracias. Hemos registrado su solicitud con el siguiente detalle:",
                 resumen,
                 "Un ejecutivo de Selec se pondrá en contacto con usted."
             ]
@@ -293,7 +333,7 @@ def manejar_flujo_postventa(session: dict, message_text: str) -> dict:
         ]
     )
 
+
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port, debug=True)
