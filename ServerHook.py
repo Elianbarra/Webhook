@@ -57,7 +57,7 @@ def normalizar_texto(txt: str) -> str:
 
 # ===================== INTEGRACIÓN ZOHO CRM =====================
 
-CRM_BASE = "https://www.zohoapis.com/crm/v2.1"      # región .com
+CRM_BASE = "https://www.zohoapis.com/crm/v2.1"     # Región .com
 ACCOUNTS_BASE = "https://accounts.zoho.com"
 
 # Cache en memoria del access token
@@ -124,10 +124,87 @@ def get_access_token() -> str:
         return None
 
 
-def crear_deal_en_zoho(campos: dict):
+def obtener_o_crear_account(campos: dict):
+    """
+    Busca un Account por Billing_Code (RUT).
+    Si existe, devuelve su ID.
+    Si no existe, crea uno nuevo con:
+      - Account_Name = empresa
+      - Billing_Code = rut
+      - Phone       = telefono
+    """
+    access_token = get_access_token()
+    if not access_token:
+        print("No se pudo obtener access token; se omite Accounts.")
+        return None
+
+    headers = {
+        "Authorization": f"Zoho-oauthtoken {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    rut = (campos.get("rut") or "").strip()
+    empresa = (campos.get("empresa") or "").strip()
+    telefono = (campos.get("telefono") or "").strip()
+
+    if not rut and not empresa:
+        # Sin datos, no intentamos crear/buscar
+        return None
+
+    # 1) Buscar por Billing_Code (RUT)
+    if rut:
+        try:
+            criteria = f"(Billing_Code:equals:{rut})"
+            search_url = f"{CRM_BASE}/Accounts/search"
+            params = {"criteria": criteria}
+            resp = requests.get(search_url, headers=headers, params=params, timeout=10)
+            print("=== Búsqueda Account por Billing_Code ===")
+            print(resp.status_code, resp.text)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                registros = data.get("data") or []
+                if registros:
+                    account_id = registros[0].get("id")
+                    if account_id:
+                        return account_id
+        except Exception as e:
+            print("ERROR buscando Account:", e)
+
+    # 2) Crear Account nuevo
+    account_name = empresa or rut or "Sin nombre"
+    account_data = {
+        "Account_Name": account_name,
+        "Billing_Code": rut or None,
+        "Phone": telefono or None
+    }
+
+    create_url = f"{CRM_BASE}/Accounts"
+    payload = {"data": [account_data]}
+
+    try:
+        resp = requests.post(create_url, headers=headers, json=payload, timeout=10)
+        print("=== Creación Account ===")
+        print(resp.status_code, resp.text)
+
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            registros = data.get("data") or []
+            if registros:
+                details = registros[0].get("details") or {}
+                account_id = details.get("id")
+                return account_id
+    except Exception as e:
+        print("ERROR creando Account:", e)
+
+    return None
+
+
+def crear_deal_en_zoho(campos: dict, account_id: str = None):
     """
     Crea un Deal en Zoho CRM usando los datos del formulario del bot.
     'campos' viene de manejar_flujo_cotizacion_bloque.
+    Si viene account_id, lo vincula al campo Account_Name del Deal.
     """
     access_token = get_access_token()
     if not access_token:
@@ -140,7 +217,6 @@ def crear_deal_en_zoho(campos: dict):
         "Content-Type": "application/json"
     }
 
-    # Ajuste los API Name según su módulo Deals
     deal_data = {
         "Deal_Name": f"Cotización - {campos.get('empresa') or 'Sin empresa'}",
         "Description": (
@@ -156,9 +232,13 @@ def crear_deal_en_zoho(campos: dict):
             f"Cantidad: {campos.get('cantidad')}\n"
             f"Dirección de entrega: {campos.get('direccion_entrega')}"
         ),
-        "Stage": "Qualification",           # use un Stage existente en su CRM
-        "Lead_Source": "SalesIQ Webhook",   # opcional
+        "Stage": "Pendiente por cotizar",           # Stage debe existir en su CRM
+        "Lead_Source": "SalesIQ Webhook",
     }
+
+    if account_id:
+        # API name del lookup a Accounts en Deals
+        deal_data["Account_Name"] = account_id
 
     payload = {"data": [deal_data]}
 
@@ -289,8 +369,8 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
             "Correo:\n"
             "Teléfono:\n"
             "Número de parte o descripción detallada:\n"
-            "Cantidad:\n"
             "Marca:\n"
+            "Cantidad:\n"
             "Dirección de entrega:"
         )
         return build_reply(formulario)
@@ -329,7 +409,7 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     """
     Recibe un solo mensaje con el formulario completo, lo parsea línea por línea
     y llena session['data'] con los campos. Luego valida obligatorios y,
-    si todo está correcto, crea el Deal en Zoho CRM.
+    si todo está correcto, crea Account + Deal en Zoho CRM.
     """
     data = session["data"]
     texto = message_text or ""
@@ -415,12 +495,10 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         if cantidad_val <= 0:
             faltantes.append("Cantidad (debe ser mayor a 0)")
     except Exception:
-        # Si no es numérico, también lo marcamos como faltante
-        if "Cantidad" not in faltantes:
-            faltantes.append("Cantidad (valor numérico)")
+        faltantes.append("Cantidad (valor numérico)")
 
     if faltantes:
-        # No crear Deal, pedir al usuario que corrija
+        # No crear Deal ni Account, pedir al usuario que corrija
         session["state"] = "cotizacion_bloque"
         mensaje_error = (
             "Hay datos obligatorios que faltan o son inválidos, por lo que no "
@@ -450,8 +528,11 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         f"Dirección de entrega: {campos['direccion_entrega']}"
     )
 
-    # Crear Deal en Zoho CRM
-    crear_deal_en_zoho(campos)
+    # 1) Obtener o crear Account
+    account_id = obtener_o_crear_account(campos)
+
+    # 2) Crear Deal en Zoho CRM vinculado al Account (si existe)
+    crear_deal_en_zoho(campos, account_id=account_id)
 
     session["state"] = "menu_principal"
 
@@ -512,9 +593,14 @@ def manejar_flujo_postventa(session: dict, message_text: str) -> dict:
             "Ha ocurrido un problema con la conversación.",
             "Volvamos al inicio. ¿Desea 'Solicitud Cotización' o 'Servicio PostVenta'?"
         ]
+
+
     )
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port, debug=True)
+    
+
+
