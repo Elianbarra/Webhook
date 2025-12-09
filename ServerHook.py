@@ -220,15 +220,14 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Content-Type": "application/json"
     }
 
-    # IDs reales de usuarios en Zoho CRM (reemplazar por los tuyos)
     owners_posibles = [
         {
             "nombre": "Maria Rengifo",
-            "id": "4358923000003278018"      # <-- reemplazar por el ID real de usuario en Zoho
+            "id": "4358923000003278018"  
         },
         {
             "nombre": "Joaquin Gonzalez",
-            "id": "4358923000011940001"    # <-- reemplazar por el ID real de usuario en Zoho
+            "id": "4358923000011940001" 
         }
     ]
 
@@ -251,10 +250,11 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
             f"Cantidad: {campos.get('cantidad')}\n"
             f"Dirección de entrega: {campos.get('direccion_entrega')}"
         ),
-        "Stage": "Pendiente por cotizar",           # Stage por defecto
+        "Stage": "Pendiente por cotizar",          
         "Lead_Source": "Chat Whatsapp",
-        # Propietario del negocio (campo Owner lookup a Users)
+        "Amount": "1",
         "Owner": {"id": owner_elegido["id"]},
+        "Asignado_a": {"id": owner_elegido["id"]}
     }
 
     if account_id:
