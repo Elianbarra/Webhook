@@ -3,6 +3,7 @@ import time
 import unicodedata
 import random
 import requests
+import re     # <--- NUEVO
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -57,13 +58,13 @@ def normalizar_texto(txt: str) -> str:
 
 # ===================== INTEGRACIÓN ZOHO CRM =====================
 
-CRM_BASE = "https://www.zohoapis.com/crm/v2.1"     # Región .com
+CRM_BASE = "https://www.zohoapis.com/crm/v2.1"
 ACCOUNTS_BASE = "https://accounts.zoho.com"
 
-# Cache en memoria del access token
+
 access_token_cache = {
     "token": None,
-    "expires_at": 0.0,   # timestamp UNIX
+    "expires_at": 0.0,  
 }
 
 
@@ -150,7 +151,6 @@ def obtener_o_crear_account(campos: dict):
     telefono = (campos.get("telefono") or "").strip()
 
     if not rut and not empresa:
-        # Sin datos, no intentamos crear/buscar
         return None
 
     # Owner aleatorio para nuevas cuentas
@@ -161,7 +161,7 @@ def obtener_o_crear_account(campos: dict):
     owner_elegido = random.choice(owners_posibles)
     print(f"Owner elegido para Account: {owner_elegido['name']} ({owner_elegido['id']})")
 
-    # 1) Buscar por Billing_Code (RUT)
+    # 1) Buscar por Billing_Code (RUT) o Codigo de Facturacion
     if rut:
         try:
             criteria = f"(Billing_Code:equals:{rut})"
@@ -181,7 +181,7 @@ def obtener_o_crear_account(campos: dict):
         except Exception as e:
             print("ERROR buscando Account:", e)
 
-    # 2) Proceso de crear Account nuevo en CRM
+    # 2) Proceso de crear Account nuevo en CRM con los siguientes campos solicitados en el mensaje de Whatsapp
     account_name = empresa or rut or "Sin nombre"
     account_data = {
         "Account_Name": account_name,
@@ -285,6 +285,7 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
 
 # ===================== ENDPOINT WEBHOOK SALESIQ =====================
 
+# Este es un endpoint de prueba para saber esta funcionando bien por el lado del servidor
 @app.route("/", methods=["GET"])
 def index():
     return "Webhook server running"
@@ -292,13 +293,13 @@ def index():
 
 @app.route("/salesiq-webhook", methods=["GET", "POST"])
 def salesiq_webhook():
-    # GET solo para pruebas rápidas en el navegador
+    # GET Solo para pruebas desde el navegador, igualmente se muestra en Railway para depuracion y muestra de logs
     if request.method == "GET":
         return jsonify({"status": "ok", "message": "Use POST desde Zoho SalesIQ"})
 
     payload = request.get_json(force=True, silent=True) or {}
-    handler = payload.get("handler")          # "trigger", "message", "context", etc.
-    operation = payload.get("operation")      # "chat", "message"... (puede venir vacío)
+    handler = payload.get("handler")          # "trigger", "message", etc.
+    operation = payload.get("operation")      # "chat", "message" (puede venir vacío)
     visitor_id = get_visitor_id(payload)
 
     # Recuperar o crear sesión
@@ -380,6 +381,8 @@ def extraer_mensaje(payload: dict) -> str:
     return ""
 
 
+
+
 def manejar_menu_principal(session: dict, message_text: str) -> dict:
     texto_norm = normalizar_texto(message_text)
 
@@ -434,11 +437,110 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
 
 
 
+def rellenar_campos_libres(lineas, campos):
+    """
+    Intenta rellenar campos que quedaron vacíos usando texto libre
+    (líneas con o sin ':').
+    """
+    email_regex = r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+
+    for linea in lineas:
+        original = linea.strip()
+        if not original:
+            continue
+
+        norm = normalizar_texto(original)
+
+        # ===== Correo =====
+        if not campos["correo"]:
+            m = re.search(email_regex, original)
+            if m:
+                campos["correo"] = m.group(0)
+                continue
+
+        # ===== RUT =====
+        if not campos["rut"] and "rut" in norm:
+            # tomar lo que viene después de "rut"
+            idx = norm.find("rut") + len("rut")
+            valor = original[idx:].replace(":", "").strip()
+            if valor:
+                campos["rut"] = valor
+
+        # ===== Teléfono =====
+        if not campos["telefono"] and (
+            "tel" in norm or "fono" in norm or "telefono" in norm
+        ):
+            solo_digitos = re.sub(r"[^\d+]", "", original)
+            if len(solo_digitos) >= 7:
+                campos["telefono"] = solo_digitos
+
+        # ===== Empresa / Razón social =====
+        if not campos["empresa"] and ("empresa" in norm or "razon social" in norm):
+            if "empresa" in norm:
+                idx = norm.find("empresa") + len("empresa")
+            else:
+                idx = norm.find("razon social") + len("razon social")
+            valor = original[idx:].replace(":", "").strip(" -")
+            if valor:
+                campos["empresa"] = valor
+
+        # ===== Contacto / Nombre =====
+        if not campos["contacto"] and ("contacto" in norm or "nombre" in norm):
+            if "contacto" in norm:
+                idx = norm.find("contacto") + len("contacto")
+            else:
+                idx = norm.find("nombre") + len("nombre")
+            valor = original[idx:].replace(":", "").strip(" -")
+            if valor:
+                campos["contacto"] = valor
+
+        # ===== Giro =====
+        if not campos["giro"] and "giro" in norm:
+            idx = norm.find("giro") + len("giro")
+            valor = original[idx:].replace(":", "").strip(" -")
+            if valor:
+                campos["giro"] = valor
+
+        # ===== Dirección de entrega =====
+        if not campos["direccion_entrega"] and (
+            "direccion entrega" in norm
+            or ("direccion" in norm and "entrega" in norm)
+        ):
+            idx = norm.find("direccion")
+            if idx >= 0:
+                valor = original[idx + len("direccion"):].replace(":", "").strip(" -")
+                if not valor:
+                    valor = original
+                campos["direccion_entrega"] = valor
+
+        # ===== Número de parte / código =====
+        if not campos["num_parte"] and (
+            "numero de parte" in norm
+            or "numero parte" in norm
+            or "codigo" in norm
+            or "referencia" in norm
+        ):
+            m = re.search(r"[-A-Za-z0-9./_]+", original)
+            if m:
+                campos["num_parte"] = m.group(0)
+
+        # ===== Cantidad =====
+        if not campos["cantidad"] and "cantidad" in norm:
+            m = re.search(r"[-+]?\d+(?:[.,]\d+)?", original)
+            if m:
+                campos["cantidad"] = m.group(0)
+
+    return campos
+
+
+
+
 def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     """
     Recibe un solo mensaje con el formulario completo, lo parsea línea por línea
     y llena session['data'] con los campos. Luego valida obligatorios y,
     si todo está correcto, crea Account + Deal en Zoho CRM.
+    Soporta tanto líneas con "Etiqueta: valor" como texto más libre.
     """
     data = session["data"]
     texto = message_text or ""
@@ -457,9 +559,11 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         "direccion_entrega": ""
     }
 
+    # ===== PRIMER PASO: líneas con "Etiqueta: valor" =====
     for linea in lineas:
         if ":" not in linea:
             continue
+
         etiqueta, valor = linea.split(":", 1)
         etiqueta_norm = normalizar_texto(etiqueta)
         valor = valor.strip()
@@ -486,6 +590,9 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             campos["marca"] = valor
         elif "direccion de entrega" in etiqueta_norm:
             campos["direccion_entrega"] = valor
+
+    # ===== SEGUNDO PASO: intentar rellenar vacíos con texto libre =====
+    campos = rellenar_campos_libres(lineas, campos)
 
     data.update(campos)
 
@@ -519,12 +626,16 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     ]
 
     # Validación extra: cantidad numérica > 0
-    try:
-        cantidad_val = float(str(campos["cantidad"]).replace(",", "."))
-        if cantidad_val <= 0:
-            faltantes.append("Cantidad (debe ser mayor a 0)")
-    except Exception:
-        faltantes.append("Cantidad (valor numérico)")
+    if campos.get("cantidad"):
+        try:
+            cantidad_val = float(str(campos["cantidad"]).replace(",", "."))
+            if cantidad_val <= 0:
+                faltantes.append("Cantidad (debe ser mayor a 0)")
+        except Exception:
+            faltantes.append("Cantidad (valor numérico)")
+    else:
+        # ya está en faltantes por estar vacío
+        pass
 
     if faltantes:
         # No crear Deal ni Account, pedir al usuario que corrija
@@ -541,7 +652,7 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             "replies": [mensaje_error]
         }
 
-    # ========= SI TODO ESTÁ OK, CONTINUAMOS =========
+    # ========= SI TODO ESTÁ CORRECTO, CONTINUAMOS =========
 
     resumen = (
         "Resumen de su solicitud de cotización:\n"
@@ -575,6 +686,8 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     }
 
 
+
+
 def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
     """
     Postventa en un solo mensaje.
@@ -598,7 +711,6 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
 
     for linea in lineas:
         if ":" not in linea:
-            # línea sin etiqueta -> la acumulamos en detalle si no hay nada aún
             linea_plana = linea.strip()
             if linea_plana:
                 if campos["detalle"]:
@@ -622,7 +734,7 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
 
     data.update(campos)
 
-    # Validación de obligatorios
+    # Validacion de campos obligatorios en el proceso de postventa
     obligatorios = ["nombre", "rut", "numero_factura"]
     nombres_legibles = {
         "nombre": "Nombre",
@@ -658,7 +770,7 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
         f"Descripción del problema: {campos['detalle'] or '(sin detalle adicional)'}"
     )
 
-    # Aquí podrías crear un caso en CRM/Desk si lo necesitas.
+
 
     session["state"] = "menu_principal"
 
