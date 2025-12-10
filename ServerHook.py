@@ -406,37 +406,32 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         )
         return build_reply(formulario)
 
-    # Servicio PostVenta en bloque
+    # Coincidencias amplias para "Servicio PostVenta"
     if (
         "postventa" in texto_norm
         or "post venta" in texto_norm
         or "servicio postventa" in texto_norm
     ):
-        session["state"] = "postventa_bloque"
-        formulario = (
-            "Perfecto, trabajaremos en su solicitud de postventa.\n"
-            "Por favor responda copiando y completando este formulario en un solo mensaje:\n\n"
-            "Nombre:\n"
-            "RUT:\n"
-            "Número de factura:\n"
-            "Descripción del problema:"
-        )
-        return build_reply(formulario)
-
-    # Si no reconoce la opción, volvemos a mostrar el menú
-    return build_reply(
-        [
-            "No he podido identificar la opción.",
-            "Seleccione una de las siguientes opciones:"
-        ],
-        input_card={
-            "type": "select",
-            "options": [
-                "Solicitud Cotización",
-                "Servicio PostVenta"
+        session["state"] = "postventa_nombre"
+        return build_reply(
+            [
+                "Perfecto, trabajaremos en su solicitud de postventa.",
+                "Por favor, indique su nombre:"
             ]
-        }
-    )
+        )
+
+    # Cualquier otra cosa -> derivar a operador humano
+    session["state"] = "derivado_operador"
+    return {
+        "action": "forward",
+        "replies": [
+            "En este momento no puedo gestionar esta solicitud automáticamente.",
+            "Le voy a derivar con un ejecutivo para que le ayude."
+        ]
+        # Si quiere forzar un departamento concreto, puede añadir por ejemplo:
+        # "department": "Soporte"   # o el nombre del departamento en Zoho SalesIQ
+    }
+
 
 
 def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
