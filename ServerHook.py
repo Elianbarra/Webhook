@@ -4,6 +4,7 @@ import unicodedata
 import random
 import requests
 import re     # <--- NUEVO
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -220,6 +221,11 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
     Además asigna Owner aleatoriamente entre María Rengifo y Joaquin Gonzalez.
     """
     access_token = get_access_token()
+        # Fecha/hora: mañana a la misma hora (formato Zoho DateTime)
+    ahora = datetime.now().astimezone()          # hora local con zona
+    manana = ahora + timedelta(days=1)
+    fecha_hora_zoho = manana.strftime("%Y-%m-%dT%H:%M:%S%z")
+
     if not access_token:
         print("No se pudo obtener access token de Zoho; se omite creación de Deal.")
         return None
@@ -241,7 +247,7 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         }
     ]
 
-    # Elige un Propietario de Trato al azar entre Maria y Joaquin
+    # Elige un Propietario de Trato al azar entre Maria y Joaquinnn
     owner_elegido = random.choice(owners_posibles)
     print(f"Owner elegido para el Deal: {owner_elegido['nombre']} ({owner_elegido['id']})")
 
@@ -265,6 +271,9 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Amount": "1",
         "Owner": {"id": owner_elegido["id"]},
         "Asignado_a": {"id": owner_elegido["id"]},
+        "Fecha_hora_1": fecha_hora_zoho,
+
+        "Type": "Industrias"
     }
 
     if account_id:
@@ -616,61 +625,51 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                 campos["direccion_entrega"] = valor
 
             else:
-                # Etiqueta rara: la guardamos para usarla luego si falta algo
                 lineas_sin_label.append(linea)
 
-        # 2) Líneas SIN dos puntos: usar heurísticas
         else:
             linea_norm = normalizar_texto(linea)
 
-            # --- Correo por regex ---
             if not campos["correo"]:
                 m_mail = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", linea)
                 if m_mail:
                     campos["correo"] = m_mail.group(0)
                     continue
 
-            # --- RUT chileno aproximado ---
             if not campos["rut"]:
                 m_rut = re.search(r"\d{1,3}\.?\d{3}\.?\d{3}-[\dkK]", linea)
                 if m_rut:
                     campos["rut"] = m_rut.group(0)
                     continue
-                # También casos tipo "RUT 78290511-2"
+
                 if "rut" in linea_norm:
                     partes = linea.split()
-                    # Tomar el último "trozo" como rut
+
                     if len(partes) >= 2:
                         campos["rut"] = partes[-1].strip()
                         continue
 
-            # --- Teléfono: muchos dígitos, sin @ ni '-' de RUT ---
             if not campos["telefono"]:
                 solo_digitos = re.sub(r"\D", "", linea)
                 if 7 <= len(solo_digitos) <= 12 and "@" not in linea:
                     campos["telefono"] = solo_digitos
                     continue
 
-            # --- Empresa explícita en la frase ---
             if not campos["empresa"] and (
                 "nombre de la empresa" in linea_norm
                 or "razon social" in linea_norm
             ):
-                # Extraemos lo que viene después de la frase clave
                 valor_emp = linea
                 for clave in ["nombre de la empresa", "razon social"]:
                     idx = linea_norm.find(clave)
                     if idx != -1:
-                        # Cortar a partir del final de la clave original
                         offset = idx + len(clave)
                         valor_emp = linea[offset:].strip(" :.-")
                         break
                 campos["empresa"] = valor_emp or linea
                 continue
 
-            # --- Giro / actividad sin dos puntos ---
             if not campos["giro"] and ("giro" in linea_norm or "actividad" in linea_norm):
-                # Tomar el texto después de la palabra clave si existe
                 valor_giro = linea
                 for clave in ["giro", "actividad"]:
                     idx = linea_norm.find(clave)
@@ -681,13 +680,11 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                 campos["giro"] = valor_giro or linea
                 continue
 
-            # --- Dirección / domicilio sin dos puntos ---
             if not campos["direccion_entrega"] and (
                 "direccion" in linea_norm
                 or "dirección" in linea_norm
                 or "domicilio" in linea_norm
             ):
-                # Tomar lo que viene después de la palabra clave, si se puede
                 valor_dir = linea
                 for clave in ["direccion", "dirección", "domicilio"]:
                     idx = linea_norm.find(clave)
@@ -698,7 +695,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                 campos["direccion_entrega"] = valor_dir or linea
                 continue
 
-            # --- Nombre de contacto sin dos puntos ---
             if not campos["contacto"] and "contacto" in linea_norm:
                 partes = linea.split("contacto", 1)
                 if len(partes) > 1:
@@ -707,18 +703,15 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                     campos["contacto"] = linea
                 continue
 
-            # Si no lo pudimos clasificar, lo guardamos como candidato genérico
             lineas_sin_label.append(linea)
 
     # ======== Fallback con líneas sin clasificar ========
 
-    # Empresa: si sigue vacía, tomamos la primera línea "neutra"
     if not campos["empresa"]:
         for l in lineas_sin_label:
             ln = normalizar_texto(l)
             if "@" in l:
                 continue
-            # evitar usar líneas que claramente son rut, teléfono, etc.
             if "rut" in ln:
                 continue
             solo_digitos = re.sub(r"\D", "", l)
@@ -728,7 +721,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             lineas_sin_label.remove(l)
             break
 
-    # Giro: siguiente línea candidata
     if not campos["giro"]:
         for l in list(lineas_sin_label):
             ln = normalizar_texto(l)
@@ -739,13 +731,11 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         if not campos["giro"] and lineas_sin_label:
             campos["giro"] = lineas_sin_label.pop(0)
 
-    # Número de parte / descripción: lo que quede
     if not campos["num_parte"] and lineas_sin_label:
         campos["num_parte"] = " ".join(lineas_sin_label)
 
     data.update(campos)
 
-    # ========= VALIDACIÓN DE CAMPOS OBLIGATORIOS =========
     obligatorios = [
         "empresa",
         "giro",
@@ -774,7 +764,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         if not str(campos.get(campo, "")).strip()
     ]
 
-    # Validación extra: cantidad numérica > 0
     try:
         cantidad_val = float(str(campos["cantidad"]).replace(",", "."))
         if cantidad_val <= 0:
