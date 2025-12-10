@@ -4,7 +4,7 @@ import unicodedata
 import random
 import requests
 import re     # <--- NUEVO
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -212,6 +212,39 @@ def obtener_o_crear_account(campos: dict):
 
     return None
 
+def calcular_closing_date(fecha_base: date) -> str:
+    """
+    Replica la lógica Deluge usando fecha_base como fecha_limite_oferta:
+    - Si día < 15   => último día del mismo mes
+    - Si día >= 15  => último día del mes siguiente
+    Devuelve string en formato YYYY-MM-DD para Zoho (Closing_Date).
+    """
+    dia = fecha_base.day
+    mes = fecha_base.month
+    anio = fecha_base.year
+
+    target_mes = mes
+    target_anio = anio
+
+    # Si el día es 15 o más, movemos al mes siguiente
+    if dia >= 15:
+        if mes == 12:
+            target_mes = 1
+            target_anio = anio + 1
+        else:
+            target_mes = mes + 1
+
+    # Último día del mes objetivo
+    if target_mes in (4, 6, 9, 11):
+        ultimo_dia = 30
+    elif target_mes == 2:
+        es_bisiesto = (target_anio % 400 == 0) or (target_anio % 4 == 0 and target_anio % 100 != 0)
+        ultimo_dia = 29 if es_bisiesto else 28
+    else:
+        ultimo_dia = 31
+
+    fecha_cierre = date(target_anio, target_mes, ultimo_dia)
+    return fecha_cierre.strftime("%Y-%m-%d")
 
 def crear_deal_en_zoho(campos: dict, account_id: str = None):
     """
@@ -237,19 +270,20 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
     }
 
     owners_posibles = [
-        {
-            "nombre": "Maria Rengifo",
-            "id": "4358923000003278018"
-        },
-        {
-            "nombre": "Joaquin Gonzalez",
-            "id": "4358923000011940001"
-        }
+        {"nombre": "Maria Rengifo",   "id": "4358923000003278018"},
+        {"nombre": "Joaquin Gonzalez","id": "4358923000011940001"}
     ]
-
-    # Elige un Propietario de Trato al azar entre Maria y Joaquinnn
     owner_elegido = random.choice(owners_posibles)
     print(f"Owner elegido para el Deal: {owner_elegido['nombre']} ({owner_elegido['id']})")
+
+    # ====== Fecha_hora_1 (mañana a la misma hora) ======
+    ahora = datetime.now().astimezone()
+    manana = ahora + timedelta(days=1)
+    fecha_hora_1_str = manana.isoformat(timespec="seconds")  # p.ej. 2025-12-05T10:30:00-03:00
+
+    # Usamos la fecha de Fecha_hora_1 como fecha_limite_oferta
+    fecha_limite_oferta = manana.date()
+    closing_date_str = calcular_closing_date(fecha_limite_oferta)  # YYYY-MM-DD
 
     deal_data = {
         "Deal_Name": f"Cotización - {campos.get('empresa') or 'Sin empresa'}",
@@ -271,10 +305,14 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Amount": "1",
         "Owner": {"id": owner_elegido["id"]},
         "Asignado_a": {"id": owner_elegido["id"]},
-        "Fecha_hora_1": fecha_hora_zoho,
 
-        "Type": "Industrias"
+        # Campo fecha-hora (límite de oferta) = mañana misma hora
+        "Fecha_hora_1": fecha_hora_1_str,
+
+        # Closing_Date calculado según tu lógica Deluge usando Fecha_hora_1 como base
+        "Closing_Date": closing_date_str,
     }
+
 
     if account_id:
         # Lookup al campo Account_Name del CRM
