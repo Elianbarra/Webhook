@@ -1,7 +1,7 @@
 import os
 import time
 import unicodedata
-import random    
+import random
 import requests
 from flask import Flask, request, jsonify
 
@@ -124,9 +124,6 @@ def get_access_token() -> str:
         return None
 
 
-import random   # ya debe estar arriba con el resto de imports
-
-
 def obtener_o_crear_account(campos: dict):
     """
     Busca un Account por Billing_Code (RUT).
@@ -136,7 +133,7 @@ def obtener_o_crear_account(campos: dict):
       - Billing_Code = rut
       - Phone       = telefono
       - Cliente_Selec = "NO"
-      - Owner       = (María Rengifo o Joaquín Gonzales, al azar)
+      - Owner       = (María Rengifo o Joaquín Gonzalez, al azar)
     """
     access_token = get_access_token()
     if not access_token:
@@ -156,12 +153,13 @@ def obtener_o_crear_account(campos: dict):
         # Sin datos, no intentamos crear/buscar
         return None
 
-    # ============ OWNER ALEATORIO PARA NUEVAS CUENTAS ============
+    # Owner aleatorio para nuevas cuentas
     owners_posibles = [
-        {"name": "Maria Rengifo",   "id": "4358923000003278018"},
-        {"name": "Joaquin Gonzales","id": "4358923000011940001"},
+        {"name": "Maria Rengifo",    "id": "4358923000003278018"},
+        {"name": "Joaquin Gonzalez", "id": "4358923000011940001"},
     ]
     owner_elegido = random.choice(owners_posibles)
+    print(f"Owner elegido para Account: {owner_elegido['name']} ({owner_elegido['id']})")
 
     # 1) Buscar por Billing_Code (RUT)
     if rut:
@@ -183,14 +181,13 @@ def obtener_o_crear_account(campos: dict):
         except Exception as e:
             print("ERROR buscando Account:", e)
 
-    # 2) Crear Account nuevo
+    # 2) Proceso de crear Account nuevo en CRM
     account_name = empresa or rut or "Sin nombre"
     account_data = {
         "Account_Name": account_name,
         "Billing_Code": rut or None,
         "Phone": telefono or None,
         "Cliente_Selec": "NO",
-        # Owner del Account
         "Owner": {"id": owner_elegido["id"]},
     }
 
@@ -236,15 +233,15 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
     owners_posibles = [
         {
             "nombre": "Maria Rengifo",
-            "id": "4358923000003278018"  
+            "id": "4358923000003278018"
         },
         {
             "nombre": "Joaquin Gonzalez",
-            "id": "4358923000011940001" 
+            "id": "4358923000011940001"
         }
     ]
 
-    # Elegir un dueño al azar
+    # Elige un Propietario de Trato al azar entre Maria y Joaquin
     owner_elegido = random.choice(owners_posibles)
     print(f"Owner elegido para el Deal: {owner_elegido['nombre']} ({owner_elegido['id']})")
 
@@ -263,15 +260,15 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
             f"Cantidad: {campos.get('cantidad')}\n"
             f"Dirección de entrega: {campos.get('direccion_entrega')}"
         ),
-        "Stage": "Pendiente por cotizar",          
+        "Stage": "Pendiente por cotizar",
         "Lead_Source": "Chat Whatsapp",
         "Amount": "1",
         "Owner": {"id": owner_elegido["id"]},
-        "Asignado_a": {"id": owner_elegido["id"]}
+        "Asignado_a": {"id": owner_elegido["id"]},
     }
 
     if account_id:
-        # API name del lookup a Accounts en Deals
+        # Lookup al campo Account_Name del CRM
         deal_data["Account_Name"] = account_id
 
     payload = {"data": [deal_data]}
@@ -284,7 +281,6 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
     except Exception as e:
         print("ERROR llamando a Zoho CRM:", e)
         return None
-
 
 
 # ===================== ENDPOINT WEBHOOK SALESIQ =====================
@@ -346,9 +342,9 @@ def salesiq_webhook():
         if state == "cotizacion_bloque":
             return jsonify(manejar_flujo_cotizacion_bloque(session, message_text))
 
-        # Flujo de postventa
-        if state.startswith("postventa_"):
-            return jsonify(manejar_flujo_postventa(session, message_text))
+        # Flujo de postventa (un solo bloque)
+        if state == "postventa_bloque":
+            return jsonify(manejar_flujo_postventa_bloque(session, message_text))
 
         # Fallback genérico
         session["state"] = "menu_principal"
@@ -410,19 +406,22 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         )
         return build_reply(formulario)
 
-    # "Servicio PostVenta"
+    # Servicio PostVenta en bloque
     if (
         "postventa" in texto_norm
         or "post venta" in texto_norm
         or "servicio postventa" in texto_norm
     ):
-        session["state"] = "postventa_nombre"
-        return build_reply(
-            [
-                "Perfecto, trabajaremos en su solicitud de postventa.",
-                "Por favor, indique su nombre:"
-            ]
+        session["state"] = "postventa_bloque"
+        formulario = (
+            "Perfecto, trabajaremos en su solicitud de postventa.\n"
+            "Por favor responda copiando y completando este formulario en un solo mensaje:\n\n"
+            "Nombre:\n"
+            "RUT:\n"
+            "Número de factura:\n"
+            "Descripción del problema:"
         )
+        return build_reply(formulario)
 
     # Si no reconoce la opción, volvemos a mostrar el menú
     return build_reply(
@@ -581,61 +580,103 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     }
 
 
-def manejar_flujo_postventa(session: dict, message_text: str) -> dict:
+def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
+    """
+    Postventa en un solo mensaje.
+    Espera líneas tipo:
+      Nombre: ...
+      RUT: ...
+      Número de factura: ...
+      Descripción del problema: ...
+    El orden puede variar; se detecta por etiqueta.
+    """
     data = session["data"]
-    state = session["state"]
+    texto = message_text or ""
+    lineas = texto.splitlines()
 
-    if state == "postventa_nombre":
-        data["nombre"] = message_text
-        session["state"] = "postventa_rut"
-        return build_reply("Indique su RUT:")
+    campos = {
+        "nombre": "",
+        "rut": "",
+        "numero_factura": "",
+        "detalle": "",
+    }
 
-    if state == "postventa_rut":
-        data["rut"] = message_text
-        session["state"] = "postventa_numero_factura"
-        return build_reply("Indique el número de factura (si lo tiene):")
+    for linea in lineas:
+        if ":" not in linea:
+            # línea sin etiqueta -> la acumulamos en detalle si no hay nada aún
+            linea_plana = linea.strip()
+            if linea_plana:
+                if campos["detalle"]:
+                    campos["detalle"] += " " + linea_plana
+                else:
+                    campos["detalle"] = linea_plana
+            continue
 
-    if state == "postventa_numero_factura":
-        data["numero_factura"] = message_text
-        session["state"] = "postventa_detalle"
-        return build_reply("Describa brevemente el problema o solicitud de postventa:")
+        etiqueta, valor = linea.split(":", 1)
+        etiqueta_norm = normalizar_texto(etiqueta)
+        valor = valor.strip()
 
-    if state == "postventa_detalle":
-        data["detalle"] = message_text
+        if "nombre" in etiqueta_norm:
+            campos["nombre"] = valor
+        elif etiqueta_norm in ("rut", "r.u.t", "r u t"):
+            campos["rut"] = valor
+        elif "factura" in etiqueta_norm or "n° factura" in etiqueta_norm:
+            campos["numero_factura"] = valor
+        elif "descripcion" in etiqueta_norm or "problema" in etiqueta_norm:
+            campos["detalle"] = valor
 
-        resumen = (
-            f"Resumen de su solicitud de postventa:\n"
-            f"Nombre: {data.get('nombre')}\n"
-            f"RUT: {data.get('rut')}\n"
-            f"Número de factura: {data.get('numero_factura')}\n"
-            f"Detalle: {data.get('detalle')}"
+    data.update(campos)
+
+    # Validación de obligatorios
+    obligatorios = ["nombre", "rut", "numero_factura"]
+    nombres_legibles = {
+        "nombre": "Nombre",
+        "rut": "RUT",
+        "numero_factura": "Número de factura",
+    }
+
+    faltantes = [
+        nombres_legibles[campo]
+        for campo in obligatorios
+        if not str(campos.get(campo, "")).strip()
+    ]
+
+    if faltantes:
+        session["state"] = "postventa_bloque"
+        mensaje_error = (
+            "Hay datos obligatorios que faltan o son inválidos, por lo que no "
+            "hemos podido registrar correctamente su solicitud de postventa.\n\n"
+            "Campos a corregir:\n- " + "\n- ".join(faltantes) + "\n\n"
+            "Por favor, vuelva a enviar el formulario completo, "
+            "asegurándose de rellenar todos los campos."
         )
-
-        session["state"] = "menu_principal"
-
         return {
             "action": "reply",
-            "replies": [
-                "Gracias. Hemos registrado su solicitud de postventa con el siguiente detalle:",
-                resumen,
-                "Un ejecutivo se pondrá en contacto con usted."
-            ]
+            "replies": [mensaje_error]
         }
 
-    session["state"] = "menu_principal"
-    return build_reply(
-        [
-            "Ha ocurrido un problema con la conversación.",
-            "Volvamos al inicio. ¿Desea 'Solicitud Cotización' o 'Servicio PostVenta'?"
-        ]
-
-
+    resumen = (
+        "Resumen de su solicitud de postventa:\n"
+        f"Nombre: {campos['nombre']}\n"
+        f"RUT: {campos['rut']}\n"
+        f"Número de factura: {campos['numero_factura']}\n"
+        f"Descripción del problema: {campos['detalle'] or '(sin detalle adicional)'}"
     )
+
+    # Aquí podrías crear un caso en CRM/Desk si lo necesitas.
+
+    session["state"] = "menu_principal"
+
+    return {
+        "action": "reply",
+        "replies": [
+            "Gracias. Hemos registrado su solicitud de postventa con el siguiente detalle:",
+            resumen,
+            "En unos momentos un operador de Selec revisará su caso."
+        ]
+    }
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 3000))
     app.run(host="0.0.0.0", port=port, debug=True)
-    
-
-
