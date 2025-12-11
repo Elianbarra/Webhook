@@ -81,7 +81,6 @@ def get_access_token() -> str:
         access_token_cache["token"]
         and access_token_cache["expires_at"] - 60 > now
     ):
-        # Token aún válido (dejamos 60s de margen)
         return access_token_cache["token"]
 
     client_id = os.environ.get("ZOHO_CLIENT_ID")
@@ -153,7 +152,6 @@ def obtener_o_crear_account(campos: dict):
     if not rut and not empresa:
         return None
 
-    # Owner aleatorio para nuevas cuentas
     owners_posibles = [
         {"name": "Maria Rengifo",    "id": "4358923000003278018"},
         {"name": "Joaquin Gonzalez", "id": "4358923000011940001"},
@@ -161,7 +159,6 @@ def obtener_o_crear_account(campos: dict):
     owner_elegido = random.choice(owners_posibles)
     print(f"Owner elegido para Account: {owner_elegido['name']} ({owner_elegido['id']})")
 
-    # 1) Buscar por Billing_Code (RUT)
     if rut:
         try:
             criteria = f"(Billing_Code:equals:{rut})"
@@ -181,13 +178,16 @@ def obtener_o_crear_account(campos: dict):
         except Exception as e:
             print("ERROR buscando Account:", e)
 
-    # 2) Crear Account nuevo
     account_name = empresa or rut or "Sin nombre"
     account_data = {
         "Account_Name": account_name,
         "Billing_Code": rut or None,
         "Phone": telefono or None,
         "Cliente_Selec": "NO",
+        "Industry": "Por definir",
+        "Region1": "Por definir",
+        "Ciudad_I": "Por definir",
+        "Website": "Por definir",
         "Owner": {"id": owner_elegido["id"]},
     }
 
@@ -257,14 +257,11 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         print("No se pudo obtener access token de Zoho; se omite creación de Deal.")
         return None
 
-    # Fecha/hora: mañana a la misma hora (formato DateTime ISO)
     ahora = datetime.now().astimezone()
     manana = ahora + timedelta(days=1)
-    fecha_hora_1_str = manana.isoformat(timespec="seconds")  # ej: 2025-12-05T10:30:00-03:00
-
-    # Usamos la fecha de Fecha_hora_1 como base para Closing_Date
+    fecha_hora_1_str = manana.isoformat(timespec="seconds")
     fecha_limite_oferta = manana.date()
-    closing_date_str = calcular_closing_date(fecha_limite_oferta)  # YYYY-MM-DD
+    closing_date_str = calcular_closing_date(fecha_limite_oferta)
 
     url = f"{CRM_BASE}/Deals"
     headers = {
@@ -299,6 +296,7 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Amount": "1",
         "Owner": {"id": owner_elegido["id"]},
         "Asignado_a": {"id": owner_elegido["id"]},
+        "Type": "Industrias",
         "Fecha_hora_1": fecha_hora_1_str,
         "Closing_Date": closing_date_str,
     }
@@ -327,7 +325,6 @@ def index():
 
 @app.route("/salesiq-webhook", methods=["GET", "POST"])
 def salesiq_webhook():
-    # GET solo para pruebas desde el navegador
     if request.method == "GET":
         return jsonify({"status": "ok", "message": "Use POST desde Zoho SalesIQ"})
 
@@ -344,7 +341,6 @@ def salesiq_webhook():
     print("=== SalesIQ payload ===")
     print(payload)
 
-    # 1) Primera entrada (trigger)
     if handler == "trigger":
         session["state"] = "menu_principal"
         respuesta = build_reply(
@@ -362,7 +358,6 @@ def salesiq_webhook():
         )
         return jsonify(respuesta)
 
-    # 2) Mensajes del usuario
     if handler == "message":
         message_text = extraer_mensaje(payload)
         print("=== mensaje extraído ===", repr(message_text))
@@ -465,25 +460,26 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
 
 def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     """
-    Recibe un solo mensaje con el formulario completo (aunque venga desordenado
-    o sin dos puntos) y llena session['data'] con los campos. Luego valida
-    obligatorios y, si todo está correcto, crea Account + Deal en Zoho CRM.
+    Acumula la información en session['data'].
+    El usuario puede enviar primero el formulario casi completo y luego,
+    en mensajes posteriores, solo los datos que falten o correcciones.
     """
     data = session["data"]
     texto = message_text or ""
     lineas = [l for l in texto.splitlines() if l.strip()]
 
+    # Punto de partida: lo ya guardado en la sesión
     campos = {
-        "empresa": "",
-        "giro": "",
-        "rut": "",
-        "contacto": "",
-        "correo": "",
-        "telefono": "",
-        "num_parte": "",
-        "cantidad": "",
-        "marca": "",
-        "direccion_entrega": ""
+        "empresa": data.get("empresa", ""),
+        "giro": data.get("giro", ""),
+        "rut": data.get("rut", ""),
+        "contacto": data.get("contacto", ""),
+        "correo": data.get("correo", ""),
+        "telefono": data.get("telefono", ""),
+        "num_parte": data.get("num_parte", ""),
+        "cantidad": data.get("cantidad", ""),
+        "marca": data.get("marca", ""),
+        "direccion_entrega": data.get("direccion_entrega", "")
     }
 
     lineas_sin_label = []
@@ -496,29 +492,32 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         if ":" in linea:
             etiqueta, valor = linea.split(":", 1)
             etiqueta_norm = normalizar_texto(etiqueta)
-            valor = valor.strip()
+            valor_clean = valor.strip()
+            if not valor_clean:
+                # Si el usuario manda "Correo:" sin valor, no borramos lo ya guardado
+                continue
 
             if (
                 "empresa" in etiqueta_norm
                 or "razon social" in etiqueta_norm
                 or "razon_social" in etiqueta_norm
             ):
-                campos["empresa"] = valor
+                campos["empresa"] = valor_clean
 
             elif "giro" in etiqueta_norm or "actividad" in etiqueta_norm:
-                campos["giro"] = valor
+                campos["giro"] = valor_clean
 
             elif etiqueta_norm in ("rut", "r.u.t", "r u t"):
-                campos["rut"] = valor
+                campos["rut"] = valor_clean
 
             elif "contacto" in etiqueta_norm:
-                campos["contacto"] = valor
+                campos["contacto"] = valor_clean
 
             elif "correo" in etiqueta_norm or "email" in etiqueta_norm:
-                campos["correo"] = valor
+                campos["correo"] = valor_clean
 
             elif "telefono" in etiqueta_norm or "teléfono" in etiqueta_norm:
-                campos["telefono"] = valor
+                campos["telefono"] = valor_clean
 
             elif (
                 "numero de parte" in etiqueta_norm
@@ -526,10 +525,10 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                 or "descripcion" in etiqueta_norm
                 or "descripción" in etiqueta_norm
             ):
-                campos["num_parte"] = valor
+                campos["num_parte"] = valor_clean
 
             elif "marca" in etiqueta_norm:
-                campos["marca"] = valor
+                campos["marca"] = valor_clean
 
             elif (
                 "direccion de entrega" in etiqueta_norm
@@ -538,10 +537,10 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                 or "dirección" in etiqueta_norm
                 or "domicilio" in etiqueta_norm
             ):
-                campos["direccion_entrega"] = valor
+                campos["direccion_entrega"] = valor_clean
 
             elif "cantidad" in etiqueta_norm:
-                campos["cantidad"] = valor
+                campos["cantidad"] = valor_clean
 
             else:
                 lineas_sin_label.append(linea)
@@ -659,6 +658,7 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
         if numeros:
             campos["cantidad"] = numeros[-1].replace(",", ".")
 
+    # Actualizar el estado acumulado de la sesión
     data.update(campos)
 
     obligatorios = [
@@ -686,15 +686,17 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     faltantes = [
         nombres_legibles[campo]
         for campo in obligatorios
-        if not str(campos.get(campo, "")).strip()
+        if not str(data.get(campo, "")).strip()
     ]
 
     try:
-        cantidad_val = float(str(campos["cantidad"]).replace(",", "."))
+        cantidad_val = float(str(data.get("cantidad", "")).replace(",", "."))
         if cantidad_val <= 0:
-            faltantes.append("Cantidad (debe ser mayor a 0)")
+            if "Cantidad (debe ser mayor a 0)" not in faltantes:
+                faltantes.append("Cantidad (debe ser mayor a 0)")
     except Exception:
-        faltantes.append("Cantidad (valor numérico)")
+        if "Cantidad (valor numérico)" not in faltantes:
+            faltantes.append("Cantidad (valor numérico)")
 
     if faltantes:
         session["state"] = "cotizacion_bloque"
@@ -702,8 +704,11 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             "Hay datos obligatorios que faltan o son inválidos, por lo que no "
             "hemos podido registrar su solicitud.\n\n"
             "Campos a corregir:\n- " + "\n- ".join(faltantes) + "\n\n"
-            "Por favor, vuelva a enviar el formulario completo, "
-            "asegurándose de rellenar todos los campos."
+            "No es necesario que vuelva a copiar todo el formulario; "
+            "en su próximo mensaje puede enviar únicamente los datos faltantes, "
+            "por ejemplo:\n"
+            "Correo: cliente@empresa.com\n"
+            "Cantidad: 5"
         )
         return {
             "action": "reply",
@@ -712,20 +717,20 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
 
     resumen = (
         "Resumen de su solicitud de cotización:\n"
-        f"Nombre de la empresa: {campos['empresa']}\n"
-        f"Giro: {campos['giro']}\n"
-        f"RUT: {campos['rut']}\n"
-        f"Nombre de contacto: {campos['contacto']}\n"
-        f"Correo: {campos['correo']}\n"
-        f"Teléfono: {campos['telefono']}\n"
-        f"Número de parte / descripción: {campos['num_parte']}\n"
-        f"Cantidad: {campos['cantidad']}\n"
-        f"Marca: {campos['marca']}\n"
-        f"Dirección de entrega: {campos['direccion_entrega']}"
+        f"Nombre de la empresa: {data['empresa']}\n"
+        f"Giro: {data['giro']}\n"
+        f"RUT: {data['rut']}\n"
+        f"Nombre de contacto: {data['contacto']}\n"
+        f"Correo: {data['correo']}\n"
+        f"Teléfono: {data['telefono']}\n"
+        f"Número de parte / descripción: {data['num_parte']}\n"
+        f"Cantidad: {data['cantidad']}\n"
+        f"Marca: {data['marca']}\n"
+        f"Dirección de entrega: {data['direccion_entrega']}"
     )
 
-    account_id = obtener_o_crear_account(campos)
-    crear_deal_en_zoho(campos, account_id=account_id)
+    account_id = obtener_o_crear_account(data)
+    crear_deal_en_zoho(data, account_id=account_id)
 
     session["state"] = "menu_principal"
 
@@ -741,23 +746,18 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
 
 def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
     """
-    Postventa en un solo mensaje.
-    Espera líneas tipo:
-      Nombre: ...
-      RUT: ...
-      Número de factura: ...
-      Descripción del problema: ...
-    El orden puede variar; se detecta por etiqueta.
+    Postventa en un solo mensaje, pero también acumula campos en session['data']
+    para permitir correcciones parciales.
     """
     data = session["data"]
     texto = message_text or ""
     lineas = texto.splitlines()
 
     campos = {
-        "nombre": "",
-        "rut": "",
-        "numero_factura": "",
-        "detalle": "",
+        "nombre": data.get("nombre", ""),
+        "rut": data.get("rut", ""),
+        "numero_factura": data.get("numero_factura", ""),
+        "detalle": data.get("detalle", ""),
     }
 
     for linea in lineas:
@@ -772,16 +772,18 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
 
         etiqueta, valor = linea.split(":", 1)
         etiqueta_norm = normalizar_texto(etiqueta)
-        valor = valor.strip()
+        valor_clean = valor.strip()
+        if not valor_clean:
+            continue
 
         if "nombre" in etiqueta_norm:
-            campos["nombre"] = valor
+            campos["nombre"] = valor_clean
         elif etiqueta_norm in ("rut", "r.u.t", "r u t"):
-            campos["rut"] = valor
+            campos["rut"] = valor_clean
         elif "factura" in etiqueta_norm or "n° factura" in etiqueta_norm:
-            campos["numero_factura"] = valor
+            campos["numero_factura"] = valor_clean
         elif "descripcion" in etiqueta_norm or "descripción" in etiqueta_norm or "problema" in etiqueta_norm:
-            campos["detalle"] = valor
+            campos["detalle"] = valor_clean
 
     data.update(campos)
 
@@ -795,7 +797,7 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
     faltantes = [
         nombres_legibles[campo]
         for campo in obligatorios
-        if not str(campos.get(campo, "")).strip()
+        if not str(data.get(campo, "")).strip()
     ]
 
     if faltantes:
@@ -804,8 +806,11 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
             "Hay datos obligatorios que faltan o son inválidos, por lo que no "
             "hemos podido registrar correctamente su solicitud de postventa.\n\n"
             "Campos a corregir:\n- " + "\n- ".join(faltantes) + "\n\n"
-            "Por favor, vuelva a enviar el formulario completo, "
-            "asegurándose de rellenar todos los campos."
+            "No es necesario que vuelva a copiar todo el formulario; "
+            "en su próximo mensaje puede enviar únicamente los datos faltantes, "
+            "por ejemplo:\n"
+            "Nombre: Juan Pérez\n"
+            "Número de factura: 12345"
         )
         return {
             "action": "reply",
@@ -814,10 +819,10 @@ def manejar_flujo_postventa_bloque(session: dict, message_text: str) -> dict:
 
     resumen = (
         "Resumen de su solicitud de postventa:\n"
-        f"Nombre: {campos['nombre']}\n"
-        f"RUT: {campos['rut']}\n"
-        f"Número de factura: {campos['numero_factura']}\n"
-        f"Descripción del problema: {campos['detalle'] or '(sin detalle adicional)'}"
+        f"Nombre: {data['nombre']}\n"
+        f"RUT: {data['rut']}\n"
+        f"Número de factura: {data['numero_factura']}\n"
+        f"Descripción del problema: {data['detalle'] or '(sin detalle adicional)'}"
     )
 
     session["state"] = "menu_principal"
