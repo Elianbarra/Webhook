@@ -151,12 +151,10 @@ def obtener_o_crear_account(campos: dict):
 
     print(f"[obtener_o_crear_account] rut={rut!r}, empresa={empresa!r}, telefono={telefono!r}")
 
-    # Si no hay ni rut ni empresa, no hacemos nada
     if not rut and not empresa:
         print("[obtener_o_crear_account] Sin RUT ni empresa, no se crea/busca Account.")
         return None
 
-    # Owner aleatorio
     owners_posibles = [
         {"name": "Maria Rengifo",    "id": "4358923000003278018"},
         {"name": "Joaquin Gonzalez", "id": "4358923000011940001"},
@@ -187,17 +185,13 @@ def obtener_o_crear_account(campos: dict):
         except Exception as e:
             print("ERROR buscando Account:", e)
 
-    # 2) Crear Account nuevo
+    # 2) Crear Account nuevo (solo campos seguros)
     account_name = empresa or rut or "Sin nombre"
     account_data = {
         "Account_Name": account_name,
         "Billing_Code": rut or None,
         "Phone": telefono or None,
         "Cliente_Selec": "NO",
-        "Industry": "Por definir",
-        "Region1": "Por definir",
-        "Ciudad_I": "Por definir",
-        "Website": "Por definir",
         "Owner": {"id": owner_elegido["id"]},
     }
 
@@ -213,6 +207,7 @@ def obtener_o_crear_account(campos: dict):
             data = resp.json()
             registros = data.get("data") or []
             if registros:
+                # Algunos responses traen details, otros todo en la raíz del item
                 details = registros[0].get("details") or registros[0]
                 account_id = details.get("id")
                 print(f"[obtener_o_crear_account] Account creado ID={account_id}")
@@ -270,12 +265,13 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         print("No se pudo obtener access token de Zoho; se omite creación de Deal.")
         return None
 
-    # Fecha/hora: mañana a la misma hora
     ahora = datetime.now().astimezone()
     manana = ahora + timedelta(days=1)
     fecha_hora_1_str = manana.isoformat(timespec="seconds")
     fecha_limite_oferta = manana.date()
     closing_date_str = calcular_closing_date(fecha_limite_oferta)
+
+    print(f"[crear_deal_en_zoho] account_id recibido = {account_id!r}")
 
     url = f"{CRM_BASE}/Deals"
     headers = {
@@ -314,9 +310,12 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Closing_Date": closing_date_str,
     }
 
-    # IMPORTANTE: el lookup Account_Name debe ir como objeto {"id": "..."}
+    # Lookup: hay que enviar objeto {"id": "..."}
     if account_id:
         deal_data["Account_Name"] = {"id": account_id}
+        print(f"[crear_deal_en_zoho] Enviando Account_Name={{'id': '{account_id}'}}")
+    else:
+        print("[crear_deal_en_zoho] NO se enviará Account_Name porque account_id es vacío/None.")
 
     payload = {"data": [deal_data]}
 
@@ -443,7 +442,7 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         )
         return build_reply(formulario)
 
-    # Servicio PostVenta en un solo bloque
+    # Servicio PostVenta
     if (
         "postventa" in texto_norm
         or "post venta" in texto_norm
@@ -460,7 +459,7 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         )
         return build_reply(formulario)
 
-    # Cualquier otra cosa -> derivar a operador humano
+    # Cualquier otra cosa -> derivar a operador
     session["state"] = "derivado_operador"
     return {
         "action": "forward",
@@ -481,7 +480,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     texto = message_text or ""
     lineas = [l for l in texto.splitlines() if l.strip()]
 
-    # Punto de partida: lo ya guardado en la sesión
     campos = {
         "empresa": data.get("empresa", ""),
         "rut": data.get("rut", ""),
@@ -506,7 +504,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             etiqueta_norm = normalizar_texto(etiqueta)
             valor_clean = valor.strip()
             if not valor_clean:
-                # Si el usuario manda "Correo:" sin valor, no borramos lo ya guardado
                 continue
 
             if (
@@ -620,7 +617,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
 
             lineas_sin_label.append(linea)
 
-    # Fallback empresa
     if not campos["empresa"]:
         for l in list(lineas_sin_label):
             ln = normalizar_texto(l)
@@ -635,17 +631,14 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             lineas_sin_label.remove(l)
             break
 
-    # Fallback num_parte
     if not campos["num_parte"] and lineas_sin_label:
         campos["num_parte"] = " ".join(lineas_sin_label)
 
-    # Fallback cantidad si sigue vacía: último número del texto
     if not str(campos["cantidad"]).strip():
         numeros = re.findall(r"\b\d+(?:[.,]\d+)?\b", texto)
         if numeros:
             campos["cantidad"] = numeros[-1].replace(",", ".")
 
-    # Actualizar el estado acumulado de la sesión
     data.update(campos)
 
     obligatorios = [
