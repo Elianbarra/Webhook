@@ -149,9 +149,14 @@ def obtener_o_crear_account(campos: dict):
     empresa = (campos.get("empresa") or "").strip()
     telefono = (campos.get("telefono") or "").strip()
 
+    print(f"[obtener_o_crear_account] rut={rut!r}, empresa={empresa!r}, telefono={telefono!r}")
+
+    # Si no hay ni rut ni empresa, no hacemos nada
     if not rut and not empresa:
+        print("[obtener_o_crear_account] Sin RUT ni empresa, no se crea/busca Account.")
         return None
 
+    # Owner aleatorio
     owners_posibles = [
         {"name": "Maria Rengifo",    "id": "4358923000003278018"},
         {"name": "Joaquin Gonzalez", "id": "4358923000011940001"},
@@ -159,6 +164,7 @@ def obtener_o_crear_account(campos: dict):
     owner_elegido = random.choice(owners_posibles)
     print(f"Owner elegido para Account: {owner_elegido['name']} ({owner_elegido['id']})")
 
+    # 1) Buscar por Billing_Code (RUT)
     if rut:
         try:
             criteria = f"(Billing_Code:equals:{rut})"
@@ -174,10 +180,14 @@ def obtener_o_crear_account(campos: dict):
                 if registros:
                     account_id = registros[0].get("id")
                     if account_id:
+                        print(f"[obtener_o_crear_account] Account encontrado ID={account_id}")
                         return account_id
+            else:
+                print("[obtener_o_crear_account] Error en búsqueda:", resp.status_code, resp.text)
         except Exception as e:
             print("ERROR buscando Account:", e)
 
+    # 2) Crear Account nuevo
     account_name = empresa or rut or "Sin nombre"
     account_data = {
         "Account_Name": account_name,
@@ -203,9 +213,12 @@ def obtener_o_crear_account(campos: dict):
             data = resp.json()
             registros = data.get("data") or []
             if registros:
-                details = registros[0].get("details") or {}
+                details = registros[0].get("details") or registros[0]
                 account_id = details.get("id")
+                print(f"[obtener_o_crear_account] Account creado ID={account_id}")
                 return account_id
+        else:
+            print("[obtener_o_crear_account] Error al crear Account:", resp.status_code, resp.text)
     except Exception as e:
         print("ERROR creando Account:", e)
 
@@ -257,6 +270,7 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         print("No se pudo obtener access token de Zoho; se omite creación de Deal.")
         return None
 
+    # Fecha/hora: mañana a la misma hora
     ahora = datetime.now().astimezone()
     manana = ahora + timedelta(days=1)
     fecha_hora_1_str = manana.isoformat(timespec="seconds")
@@ -300,8 +314,9 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Closing_Date": closing_date_str,
     }
 
+    # IMPORTANTE: el lookup Account_Name debe ir como objeto {"id": "..."}
     if account_id:
-        deal_data["Account_Name"] = account_id
+        deal_data["Account_Name"] = {"id": account_id}
 
     payload = {"data": [deal_data]}
 
@@ -580,8 +595,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
                 campos["empresa"] = valor_emp or linea
                 continue
 
-
-
             if not campos["direccion_entrega"] and (
                 "direccion" in linea_norm
                 or "dirección" in linea_norm
@@ -621,7 +634,6 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
             campos["empresa"] = l
             lineas_sin_label.remove(l)
             break
-
 
     # Fallback num_parte
     if not campos["num_parte"] and lineas_sin_label:
