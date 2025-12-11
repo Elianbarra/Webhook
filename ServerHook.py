@@ -211,7 +211,6 @@ def obtener_o_crear_account(campos: dict):
             data = resp.json()
             registros = data.get("data") or []
             if registros:
-                # Algunos responses traen details, otros todo en la raíz del item
                 details = registros[0].get("details") or registros[0]
                 account_id = details.get("id")
                 print(f"[obtener_o_crear_account] Account creado ID={account_id}")
@@ -314,7 +313,6 @@ def crear_deal_en_zoho(campos: dict, account_id: str = None):
         "Closing_Date": closing_date_str,
     }
 
-    # Lookup: hay que enviar objeto {"id": "..."}
     if account_id:
         deal_data["Account_Name"] = {"id": account_id}
         print(f"[crear_deal_en_zoho] Enviando Account_Name={{'id': '{account_id}'}}")
@@ -424,7 +422,6 @@ def extraer_mensaje(payload: dict) -> str:
 def manejar_menu_principal(session: dict, message_text: str) -> dict:
     texto_norm = normalizar_texto(message_text)
 
-    # Solicitud Cotización
     if (
         "cotiz" in texto_norm
         or "solicitud cotizacion" in texto_norm
@@ -446,7 +443,6 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         )
         return build_reply(formulario)
 
-    # Servicio PostVenta
     if (
         "postventa" in texto_norm
         or "post venta" in texto_norm
@@ -463,7 +459,6 @@ def manejar_menu_principal(session: dict, message_text: str) -> dict:
         )
         return build_reply(formulario)
 
-    # Cualquier otra cosa -> derivar a operador
     session["state"] = "derivado_operador"
     return {
         "action": "forward",
@@ -713,7 +708,9 @@ def manejar_flujo_cotizacion_bloque(session: dict, message_text: str) -> dict:
     account_id = obtener_o_crear_account(data)
     crear_deal_en_zoho(data, account_id=account_id)
 
+    # Reiniciar la “memoria” de este visitante para próximas cotizaciones
     session["state"] = "menu_principal"
+    session["data"] = {}
 
     return {
         "action": "reply",
