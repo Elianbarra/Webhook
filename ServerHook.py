@@ -193,6 +193,10 @@ def obtener_o_crear_account(campos: dict):
         "Phone": telefono or None,
         "Cliente_Selec": "NO",
         "Owner": {"id": owner_elegido["id"]},
+        "Industry": "Por definir",
+        "Region1": "Por definir",
+        "Ciudad_I": "Por definir",
+        "Website": "Por definir"
     }
 
     create_url = f"{CRM_BASE}/Accounts"
